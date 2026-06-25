@@ -1,6 +1,6 @@
 {
   "name": "@tinloof/tanstack-wsr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Worker-Side Rendering (WSR) for TanStack Start: render selected routes inside a service worker — instant, offline, zero-flash document loads.",
   "keywords": [
@@ -81,6 +81,7 @@
     "react": "^19.2.0",
     "tsdown": "^0.22.3",
     "typescript": "^6.0.2",
+    "unrun": "^0.3.1",
     "vite": "^8.0.0",
     "vitest": "^4.1.4"
   },
