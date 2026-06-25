@@ -14,9 +14,9 @@ export const Route = createFileRoute("/dashboard")({
 
 [`examples/recipes`](./examples/recipes) — a local-first recipes app
 
-<video src="https://pub-b3bfb84f15ea47d9b3cce7adaad044d8.r2.dev/wsr.mp4" controls muted playsinline width="100%">
+<video src="https://github.com/user-attachments/assets/eb207b28-93c8-4865-adef-9bc009b9c94f" controls muted playsinline width="100%">
   Your browser can't play embedded video —
-  <a href="https://pub-b3bfb84f15ea47d9b3cce7adaad044d8.r2.dev/wsr.mp4">play it directly</a>.
+  <a href="https://github.com/user-attachments/assets/eb207b28-93c8-4865-adef-9bc009b9c94f">play it directly</a>.
 </video>
 
 _[Demo link](https://tanstack-start-sw-recipes.tinloof.workers.dev/)_
