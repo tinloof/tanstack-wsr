@@ -1,0 +1,88 @@
+{
+  "name": "@tinloof/tanstack-wsr",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Worker-Side Rendering (WSR) for TanStack Start: render selected routes inside a service worker — instant, offline, zero-flash document loads.",
+  "keywords": [
+    "vite-plugin",
+    "vite",
+    "tanstack",
+    "tanstack-start",
+    "tanstack-router",
+    "service-worker",
+    "wsr",
+    "ssr",
+    "offline",
+    "pwa"
+  ],
+  "license": "MIT",
+  "author": "Tinloof",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tinloof/tanstack-wsr.git"
+  },
+  "homepage": "https://github.com/tinloof/tanstack-wsr#readme",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    "./vite": {
+      "types": "./dist/vite.d.mts",
+      "default": "./dist/vite.mjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.mts",
+      "default": "./dist/react.mjs"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.mts",
+      "default": "./dist/worker.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepare": "tsdown",
+    "dev": "pnpm -C examples/recipes dev",
+    "build-install": "pnpm install --frozen-lockfile",
+    "version": "changeset version",
+    "release": "pnpm build && changeset publish",
+    "changeset": "changeset",
+    "example:build": "pnpm -C examples/recipes build",
+    "example:deploy": "pnpm -C examples/recipes deploy",
+    "format": "biome format",
+    "lint": "biome lint",
+    "check": "biome check",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:build": "publint --strict && attw --pack . --ignore-rules no-resolution cjs-resolves-to-esm",
+    "test:e2e": "playwright test"
+  },
+  "peerDependencies": {
+    "@tanstack/react-router": "*",
+    "@tanstack/router-core": "*",
+    "react": ">=18",
+    "vite": ">=6"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.1",
+    "@biomejs/biome": "2.4.5",
+    "@changesets/cli": "^2.27.0",
+    "@playwright/test": "^1.50.1",
+    "@tanstack/react-router": "latest",
+    "@tanstack/react-start": "latest",
+    "@tanstack/router-core": "latest",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.0",
+    "publint": "^0.3.8",
+    "react": "^19.2.0",
+    "tsdown": "^0.22.3",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.0",
+    "vitest": "^4.1.4"
+  },
+  "packageManager": "pnpm@10.33.2+sha512.a90faf6feeab71ad6c6e57f94e0fe1a12f5dcc22cd754db40ae9593eb6a3e0b6b12e3540218bb37ae083404b1f2ce6db2a4121e979829b4aff94b99f49da1cf8"
+}

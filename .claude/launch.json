@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "recipes",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-C", "examples/recipes", "dev"],
+      "port": 3000
+    }
+  ]
+}
