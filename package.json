@@ -44,8 +44,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown",
-    "prepare": "tsdown",
+    "build": "tsdown src/vite.ts src/react.tsx src/worker.tsx src/devtools-stub.ts --format esm --dts --clean --no-config",
+    "prepare": "pnpm run build",
     "dev": "pnpm -C examples/recipes dev",
     "build-install": "pnpm install --frozen-lockfile",
     "version": "changeset version",
@@ -81,7 +81,6 @@
     "react": "^19.2.0",
     "tsdown": "^0.22.3",
     "typescript": "^6.0.2",
-    "unrun": "^0.3.1",
     "vite": "^8.0.0",
     "vitest": "^4.1.4"
   },
