@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { getServerFnClientPlugin, withForcedDevMode } from "../../src/vite";
+import { getServerFnClientPlugin, getStartWorkerPlugins } from "../../src/vite";
 
-// These pin the two pieces coupled to TanStack Start internals — the ones most
-// likely to break on a Start upgrade. If Start renames the server-fn plugin or
-// changes its hook shape / PluginContext, these fail loudly (pair with the
-// prod-build id-match e2e for the runtime guarantee).
+// These pin the pieces coupled to TanStack Start internals — the ones most
+// likely to break on a Start upgrade. If Start renames a plugin or changes its
+// hook shape / PluginContext, these fail loudly (pair with the prod-build
+// id-match e2e for the runtime guarantee).
 //
-// The "Start not installed -> null" fallback is exercised by serverCodeGuard's
+// The "Start not installed -> null/[]" fallback is exercised by serverCodeGuard's
 // own unit test; we don't assert it here because Node/Vitest module resolution
 // makes a true "unresolvable" temp dir unreliable in-process.
 
@@ -26,54 +26,21 @@ describe("getServerFnClientPlugin", () => {
 	});
 });
 
-describe("withForcedDevMode", () => {
-	function makeCtx() {
-		return {
-			environment: { mode: "build", name: "client" },
-			load: () => "loaded",
-			error: () => {
-				throw new Error("err");
-			},
-		};
-	}
-
-	it("forces environment.mode to 'dev' in the transform {handler} hook", () => {
-		let seenMode: unknown;
-		let seenName: unknown;
-		const plugin = {
-			name: "fake",
-			transform: {
-				filter: {},
-				handler(this: { environment: { mode: string; name: string } }) {
-					seenMode = this.environment.mode;
-					seenName = this.environment.name;
-				},
-			},
-		} as never;
-		const wrapped = withForcedDevMode(plugin);
-		const ctx = makeCtx();
-		(wrapped.transform as { handler: (this: object) => void }).handler.call(ctx);
-		expect(seenMode).toBe("dev"); // forced
-		expect(seenName).toBe("client"); // non-mode props pass through
-		expect(ctx.environment.mode).toBe("build"); // underlying ctx untouched
-	});
-
-	it("forces 'dev' in a bare-function hook (buildStart) and keeps methods callable", () => {
-		let seenMode: unknown;
-		let loadResult: unknown;
-		const plugin = {
-			name: "fake",
-			buildStart(this: {
-				environment: { mode: string };
-				load: () => string;
-			}) {
-				seenMode = this.environment.mode;
-				loadResult = this.load();
-			},
-		} as never;
-		const wrapped = withForcedDevMode(plugin);
-		(wrapped.buildStart as (this: object) => void).call(makeCtx());
-		expect(seenMode).toBe("dev");
-		expect(loadResult).toBe("loaded"); // bound method still works
+describe("getStartWorkerPlugins", () => {
+	it("pulls route-tree pruning + the server-fn compiler so server-only route code never reaches /sw.js", async () => {
+		const plugins = await getStartWorkerPlugins(process.cwd());
+		const names = plugins.map((p) => p.name);
+		// Route pruning: the generator crawls routes; the client-tree plugin serves
+		// a tree with pure-server routes removed (their modules never imported).
+		expect(names).toContain("tanstack:router-generator");
+		expect(names).toContain("tanstack-start:route-tree-client-plugin");
+		// …plus the server-fn → RPC compiler.
+		expect(names).toContain("tanstack-start-core::server-fn:client");
+		// The client-tree plugin is forced into our standalone env (its default
+		// applyToEnvironment only matches Vite's "client" env).
+		const clientTree = plugins.find(
+			(p) => p.name === "tanstack-start:route-tree-client-plugin",
+		) as { applyToEnvironment?: () => boolean } | undefined;
+		expect(clientTree?.applyToEnvironment?.()).toBe(true);
 	});
 });

@@ -179,22 +179,11 @@ export interface TanstackWsrOptions {
 // worker build must define this or the RPC stubs throw on `process` at init.
 const DEFAULT_SERVER_FN_BASE = "/_serverFn/";
 
-// Pulls Start's CLIENT server-function compiler plugin out of a FRESH
-// `tanstackStart()` instance and adds it to the worker build. That plugin
-// rewrites `createServerFn().handler(body)` to `createClientRpc(id)` (a fetch to
-// the origin) for the `client` environment — so the worker renders a route whose
-// component/loader references a server fn WITHOUT bundling the server body.
-//
-// A fresh instance (not the app's) avoids mutating the dev server's shared
-// compiler cache (keyed by env name). We force `applyToEnvironment` on so it runs
-// regardless of what Vite names this standalone build's environment, and the
-// function ids it emits match the app's because both use Start's default
-// `generateFunctionId`. Returns null if Start isn't installed (the guard then
-// keeps its original "no server code" behavior).
-/** @internal exported for tests; not part of the public API. */
-export async function getServerFnClientPlugin(
-	root: string = process.cwd(),
-): Promise<Plugin | null> {
+// Loads a FRESH `tanstackStart()` instance from the app root and returns its
+// plugins flattened. A fresh instance (not the app's) avoids mutating the dev
+// server's shared compiler/generator caches. Returns null if Start isn't
+// resolvable (the caller then falls back to the no-server-code guard).
+async function loadStartPlugins(root: string): Promise<Plugin[] | null> {
 	// Resolve @tanstack/react-start from the APP (root), not from this package's
 	// location — the app depends on Start, this package only peer-deps it. The
 	// subpath is import-only (no `require` condition), so resolve the package dir
@@ -216,32 +205,118 @@ export async function getServerFnClientPlugin(
 		return null;
 	}
 	if (typeof mod.tanstackStart !== "function") return null;
-	const flat = ([] as unknown[]).concat(mod.tanstackStart()).flat(Infinity);
-	const plugin = flat.find(
-		(p): p is Plugin =>
-			!!p &&
-			typeof p === "object" &&
-			(p as Plugin).name === "tanstack-start-core::server-fn:client",
+	return ([] as unknown[])
+		.concat(mod.tanstackStart())
+		.flat(Infinity)
+		.filter((p): p is Plugin => !!p && typeof p === "object" && "name" in p);
+}
+
+// Forces a per-environment Start plugin to run in our single standalone build
+// environment, whatever Vite names it.
+const runEverywhere = (p: Plugin): Plugin => ({
+	...p,
+	applyToEnvironment: () => true,
+});
+
+/**
+ * Pulls Start's CLIENT server-function compiler plugin. It rewrites
+ * `createServerFn().handler(body)` to `createClientRpc(id)` (a fetch to the
+ * origin) so the worker renders routes that reference a server fn WITHOUT
+ * bundling the server body.
+ * @internal exported for tests; not part of the public API.
+ */
+export async function getServerFnClientPlugin(
+	root: string = process.cwd(),
+): Promise<Plugin | null> {
+	const flat = await loadStartPlugins(root);
+	const plugin = flat?.find(
+		(p) => p.name === "tanstack-start-core::server-fn:client",
 	);
-	if (!plugin) return null;
-	// Run in our single standalone env whatever Vite calls it.
-	return { ...plugin, applyToEnvironment: () => true };
+	return plugin ? runEverywhere(plugin) : null;
+}
+
+// Start strips server-only code from the CLIENT bundle in two ways the worker
+// must reproduce (otherwise route `server` handlers — and their server-only
+// imports like a DB client or auth lib — get pulled into /sw.js and break the
+// build, e.g. `environment.transformRequest is not a function` or missing
+// server-entry specifiers):
+//   1. router-generator + route-tree-client-plugin: serve a route tree with
+//      pure-server routes (those with only a `server` handler) PRUNED, so their
+//      modules are never imported.
+//   2. server-fn:client: compile createServerFn → RPC.
+// (1) is two plugins from the SAME Start instance — they share a closure: the
+// generator's crawl feeds the client tree plugin's `load`. We force both to run
+// in the standalone env and keep the generator's pre-ordering.
+/** @internal exported for tests; not part of the public API. */
+export async function getStartWorkerPlugins(
+	root: string = process.cwd(),
+): Promise<Plugin[]> {
+	const flat = await loadStartPlugins(root);
+	if (!flat) return [];
+	const pick = (name: string) => flat.find((p) => p.name === name);
+	const generator = pick("tanstack:router-generator");
+	const routeTreeClient = pick("tanstack-start:route-tree-client-plugin");
+	const serverFn = pick("tanstack-start-core::server-fn:client");
+
+	// The generator + client-tree plugins read Start's config context via
+	// getConfig(), which is resolved by Start's config plugins' `config()` hook.
+	// We CANNOT include those config plugins in the worker build — they install a
+	// custom `builder.buildApp` + environments that take over the build and
+	// replace our single worker entry. So we invoke their `config()` once here,
+	// purely for its side effect of resolving the shared context (root + router
+	// config), and discard the returned config.
+	type ConfigHook = (
+		cfg: Record<string, unknown>,
+		env: { command: string; mode: string },
+	) => unknown;
+	const configHook = (p: Plugin | undefined): ConfigHook | undefined => {
+		const c = p?.config;
+		if (typeof c === "function") return c as ConfigHook;
+		if (c && typeof c === "object" && typeof c.handler === "function") {
+			return c.handler as ConfigHook;
+		}
+		return undefined;
+	};
+	const configPluginNames = [
+		"tanstack-react-start:config",
+		"tanstack-start-core:config",
+	];
+	for (const name of configPluginNames) {
+		const hook = configHook(flat.find((x) => x.name === name));
+		if (!hook) continue;
+		try {
+			await hook(
+				{ root, base: "/" },
+				{ command: "serve", mode: "development" },
+			);
+		} catch {
+			// If the context can't be resolved (e.g. no app router), route pruning
+			// is skipped; the server-fn compiler below still runs.
+		}
+	}
+
+	const plugins: Plugin[] = [];
+	// Generator (runs as-is), then the client tree plugin (forced into our env),
+	// then the server-fn compiler.
+	if (generator) plugins.push(generator);
+	if (routeTreeClient) plugins.push(runEverywhere(routeTreeClient));
+	if (serverFn) plugins.push(runEverywhere(serverFn));
+	return plugins;
 }
 
 // Start's server-fn compiler derives the function-id scheme from
-// `this.environment.mode`: 'build' → sha256 hash, otherwise → a base64 dev id.
-// A Vite `build()` is ALWAYS mode 'build', so in dev the worker would emit hashed
-// ids while the dev server registers server fns under dev (base64) ids — the
-// worker's in-render RPC then 500s with "Invalid server function ID". This wraps
-// the compiler plugin's hooks so they see `environment.mode === 'dev'`, making
-// the worker emit dev ids that match the dev server. Build (prod) is left alone:
-// there, both worker and server are mode 'build', so the hashes already match.
+// `this.environment.mode`: 'build' → sha256(entryId), 'dev' → a module-specifier
+// encoding that matches the running dev server's registered ids. A Vite `build()`
+// is always mode 'build', so without this the worker emits hashed ids and a
+// server fn invoked DURING the in-worker render 404s in dev (prod ids already
+// match). This proxies the server-fn plugin's hooks so it sees mode 'dev'.
 //
-// NOTE: a Proxy over Start's internal PluginContext.environment — coupled to
-// Start internals, so it's guarded by the plugin-name lookup above and only
-// applied in dev.
-/** @internal exported for tests; not part of the public API. */
-export function withForcedDevMode(plugin: Plugin): Plugin {
+// Safe only because route pruning has already removed pure-server routes (and
+// their server-only npm deps) from the worker graph — those were what made the
+// compiler's dev-mode module loader hit the missing `transformRequest`. Scoped
+// to the server-fn plugin alone; the generator/route-tree plugins keep real
+// build mode. Dev only.
+function withForcedDevMode(plugin: Plugin): Plugin {
 	type Ctx = Record<string | symbol, unknown> & { environment?: object };
 	const devEnv = (env: object) =>
 		new Proxy(env, {
@@ -256,7 +331,7 @@ export function withForcedDevMode(plugin: Plugin): Plugin {
 				return typeof v === "function" ? v.bind(t) : v;
 			},
 		});
-	// biome-ignore lint/suspicious/noExplicitAny: dynamic hook shapes
+	// biome-ignore lint/suspicious/noExplicitAny: dynamic Vite hook shapes
 	const wrap = (hook: any): any => {
 		if (typeof hook === "function") {
 			return function (this: Ctx, ...args: unknown[]) {
@@ -291,10 +366,30 @@ export async function bundleWorker(
 	clientEntry: string,
 ): Promise<string> {
 	const input = options.entry ? path.resolve(options.entry) : WSR_VIRTUAL_ENTRY;
-	let serverFnPlugin = await getServerFnClientPlugin();
-	// In dev, force dev-mode function ids so the worker's RPCs match the dev
-	// server's registered ids. Prod build ids already match (both 'build').
-	if (serverFnPlugin && dev) serverFnPlugin = withForcedDevMode(serverFnPlugin);
+	// Start's client transforms reproduced for the worker so server-only code
+	// never reaches /sw.js: prune pure-server routes from the tree + compile
+	// server fns to RPCs. Route pruning runs Start's generator/config plugins,
+	// which require the app's route tree — so it applies only to the default
+	// router-derived entry. With a custom `entry` (advanced) the caller owns the
+	// graph, so we apply server-fn compilation alone. Empty if Start isn't
+	// installed (then the serverCodeGuard fallback applies).
+	const startPlugins = options.entry
+		? [await getServerFnClientPlugin()].filter((p): p is Plugin => !!p)
+		: await getStartWorkerPlugins();
+	const hasStart = startPlugins.some(
+		(p) => p.name === "tanstack-start-core::server-fn:client",
+	);
+	// In dev, make the server-fn compiler emit dev-style function ids that match
+	// the running dev server, so a server fn called during the in-worker render
+	// works. Build (prod) already matches (both sha256). Safe because route
+	// pruning removed the server-only modules that previously crashed dev mode.
+	const plugins = dev
+		? startPlugins.map((p) =>
+				p.name === "tanstack-start-core::server-fn:client"
+					? withForcedDevMode(p)
+					: p,
+			)
+		: startPlugins;
 	const result = await build({
 		// Don't reload the app's vite config — that would recursively include this
 		// plugin and loop. This build is standalone but reuses Vite's resolver.
@@ -319,12 +414,13 @@ export async function bundleWorker(
 		// build() runs in build mode, not dev-server mode.
 		esbuild: { jsx: "automatic", jsxImportSource: "react" },
 		plugins: [
-			// Either Start's client server-fn compiler (enforce:'pre' — rewrites
-			// createServerFn → createClientRpc and strips server-only bodies, giving
-			// browser parity), OR, if it couldn't be loaded, the fallback guard that
-			// fails the build rather than letting raw server code leak into /sw.js.
-			serverFnPlugin ??
-				serverCodeGuard(path.resolve(process.cwd(), "src") + path.sep),
+			// Start's client transforms (route-tree pruning + createServerFn →
+			// createClientRpc, giving browser parity), OR — if Start couldn't be
+			// loaded — the fallback guard that fails the build rather than letting
+			// raw server code leak into /sw.js.
+			...(hasStart
+				? plugins
+				: [serverCodeGuard(path.resolve(process.cwd(), "src") + path.sep)]),
 			urlAssetPlugin(resolveUrl),
 			swEntryPlugin(options),
 			nodeStreamStub(),
