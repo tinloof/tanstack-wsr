@@ -123,14 +123,81 @@ Two consequences:
 - **404s follow the root.** Unmatched paths render in the worker only if the
   **root** is marked; otherwise they fall through to the origin.
 
-## API
+## Worker routes
 
-Two exports:
+The mirror of TanStack [server routes](https://tanstack.com/start/latest/docs/framework/react/guide/server-routes),
+but the handlers run in the **service worker**. Declare them with the `worker`
+route option — the route's **path is the identity** (no name, no codegen; the
+router is the dispatch table). This lets a single stateful client — a local-first
+/ sync-engine client (Zero, Replicache, …) — live in the worker, with **reads and
+writes both going through it**. Because a wsr render reads that same client, a
+hard-load render reflects exactly what the user just did: one client, one store,
+no cross-client round-trip, no stale flash.
+
+```ts
+// src/routes/api/todos.ts
+import { createFileRoute } from "@tanstack/react-router";
+import { getClient } from "@/client"; // your single in-worker client
+
+export const Route = createFileRoute("/api/todos")({
+  worker: {
+    handlers: {
+      GET: async () => Response.json(await getClient().list()),
+      POST: async ({ request }) => {
+        await getClient().add(await request.json());
+        return new Response(null, { status: 204 });
+      },
+    },
+  },
+  // optional: a `server` handler for the same method is the no-worker
+  // (first-load / SSR) fallback — see TanStack server routes.
+});
+```
+
+Call them with `workerFetch(path, init)`, which resolves in the right place:
+
+- **in the worker** (e.g. a `wsr` route's `loader` during a hard load) → runs the
+  matched handler directly (a worker can't fetch itself);
+- **on the main thread** (client navigation, event handlers) → `fetch`es the
+  path, which the worker intercepts — the same path it renders on;
+- **on the origin server** (SSR, no worker yet) → a `503`, so the caller can fall
+  back (e.g. render an empty shell until the worker takes over).
+
+```ts
+import { workerFetch } from "@tinloof/tanstack-wsr/worker-fetch";
+
+export const Route = createFileRoute("/")({
+  wsr: true,
+  loader: async () => {
+    const res = await workerFetch("/api/todos"); // worker on hard load, fetch on nav
+    return { todos: res.ok ? await res.json() : [] };
+  },
+  component: Todos,
+});
+
+// a mutation, from an event handler
+await workerFetch("/api/todos", { method: "POST", body: JSON.stringify({ title }) });
+```
+
+Notes:
+
+- Handlers are keyed by HTTP method (like server routes); model operations
+  RESTfully (`POST`/`PATCH`/`DELETE`) or put an action in the body.
+- The worker must be **registered and controlling** the page for main-thread
+  calls (it is, right after it renders a document).
+- To push live updates to pages (e.g. when synced data changes), call
+  `broadcastToClients(message)` from a handler and have pages listen on
+  `navigator.serviceWorker` to `router.invalidate()`.
+
+## API
 
 - `@tinloof/tanstack-wsr/vite` → `tanstackWsr({ router?, entry? })` — the Vite
   plugin (`router` defaults to `./src/router`, must export `getRouter`).
 - `@tinloof/tanstack-wsr/react` → `<WsrRegister hot? />` — registers `/sw.js`;
   pass `import.meta.hot` for the dev auto-update bridge.
+- `@tinloof/tanstack-wsr/worker-fetch` → `workerFetch(path, init)` and
+  `broadcastToClients(message)`; the `worker` route option declares the handlers
+  — see [Worker routes](#worker-routes).
 
 ## How it works
 
