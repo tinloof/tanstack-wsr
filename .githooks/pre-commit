@@ -1,0 +1,14 @@
+#!/bin/sh
+# Auto-format and safe-fix staged files with Biome, then re-stage the fixes so
+# the commit includes them. Anything Biome can't fix automatically (lint errors
+# needing a manual edit) still fails the commit. Mirrors CI's `pnpm run check`,
+# so formatting never lands a red build.
+#
+# Bypass with `git commit --no-verify` when you really need to.
+# --no-errors-on-unmatched: don't fail the commit when none of the staged files
+# are Biome-managed (e.g. only package.json / shell scripts changed).
+pnpm exec biome check --staged --write --no-errors-on-unmatched
+status=$?
+# Re-stage the files Biome just rewrote (already-staged paths only).
+git update-index --again
+exit "$status"
