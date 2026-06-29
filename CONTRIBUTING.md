@@ -30,6 +30,11 @@ pnpm exec tsdown --watch
 Other scripts: `pnpm example:build`, `pnpm example:deploy` (Cloudflare),
 `pnpm format` / `pnpm lint` / `pnpm check` (Biome).
 
+A **pre-commit hook** (`.githooks/pre-commit`, activated on install via
+`prepare`) runs `biome check --staged --write` and re-stages the fixes, so
+formatting/safe fixes land automatically and match CI. Bypass with
+`git commit --no-verify`.
+
 ## Releasing to npm
 
 1. Make your change.
