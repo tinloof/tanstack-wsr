@@ -5,7 +5,9 @@ import {
 	RouterProvider,
 } from "@tanstack/react-router";
 import { renderRouterToString } from "@tanstack/react-router/ssr/server";
+import { isResolvedRedirect } from "@tanstack/router-core";
 import { attachRouterServerSsrUtils } from "@tanstack/router-core/ssr/server";
+import { dispatchWorkerRoute, isWorkerRouteRequest } from "./worker-fetch";
 import "./types";
 
 // Start's client runtime resolves options via `window.__TSS_START_OPTIONS__`
@@ -68,6 +70,12 @@ export interface CreateWsrWorkerOptions {
 export function createWsrWorker({ getRouter }: CreateWsrWorkerOptions) {
 	const sw = globalThis as unknown as ServiceWorkerGlobal;
 
+	// Mark this as the worker context and publish the router factory so in-worker
+	// `workerFetch` can dispatch worker routes directly (no self-fetch).
+	(globalThis as { __WSR_IN_WORKER__?: boolean }).__WSR_IN_WORKER__ = true;
+	(globalThis as { __WSR_GET_ROUTER__?: typeof getRouter }).__WSR_GET_ROUTER__ =
+		getRouter;
+
 	// Activate immediately so a freshly installed worker takes control without a
 	// manual reload (key for the dev update flow; harmless in production).
 	sw.addEventListener("install", () => void sw.skipWaiting());
@@ -78,6 +86,20 @@ export function createWsrWorker({ getRouter }: CreateWsrWorkerOptions) {
 	sw.addEventListener("fetch", (event) => {
 		const request = event.request;
 		const url = new URL(request.url);
+		if (url.origin !== sw.location.origin) return; // cross-origin → network
+
+		// Worker routes (the mirror of server routes): if the matched route has a
+		// `worker` handler for this method, run it; otherwise fall back to the
+		// network. Mutations + JSON GETs qualify; navigations/assets are skipped.
+		if (isWorkerRouteRequest(request)) {
+			event.respondWith(
+				dispatchWorkerRoute(getRouter, request).then(
+					(res) => res ?? fetch(request),
+				),
+			);
+			return;
+		}
+
 		if (!isNavigationRequest(request, url, sw.location.origin)) return;
 		event.respondWith(renderRequest(url, request, getRouter));
 	});
@@ -115,7 +137,14 @@ export function isWsrChain(
 	return matchedRoutes.some((route) => route.options?.wsr === true);
 }
 
-async function renderRequest(
+/**
+ * Render (or redirect) a single intercepted navigation. Builds the router at the
+ * requested URL, runs its loaders, and returns the HTML — or, if a route threw
+ * `redirect()`, a redirect Response.
+ *
+ * @internal exported for tests.
+ */
+export async function renderRequest(
 	url: URL,
 	request: Request,
 	getRouter: CreateWsrWorkerOptions["getRouter"],
@@ -140,6 +169,23 @@ async function renderRequest(
 	// Marked route — run its loaders and render. The minimal manifest points
 	// <Scripts/> at Start's client entry so its bundle hydrates this page.
 	await router.load();
+
+	// A `redirect()` thrown in beforeLoad/loader is captured on router state, not
+	// rendered. Honor it with a real redirect Response so the browser navigates
+	// (e.g. an auth gate sending logged-out users to /login). Without this the
+	// worker would render the original route's HTML and the redirect is silently
+	// lost. The redirect target is then re-fetched and handled normally (its own
+	// chain decides wsr vs origin passthrough).
+	const redirect = router.state.redirect;
+	if (isResolvedRedirect(redirect)) {
+		const headers = new Headers(redirect.headers);
+		headers.set("Location", redirect.options.href);
+		return new Response(null, {
+			status: redirect.options.statusCode ?? redirect.status ?? 307,
+			headers,
+		});
+	}
+
 	attachRouterServerSsrUtils({
 		router,
 		manifest: {

@@ -1,12 +1,24 @@
-// Augments TanStack Router with a first-class `sw` route option. Imported (for
-// its types) by both ./worker and ./react, so an app picks it up whether it
-// imports the worker helper or the <WsrRegister> component.
+// Augments TanStack Router with first-class `wsr` and `worker` route options.
+// Imported (for its types) by both ./worker and ./react, so an app picks them up
+// whether it imports the worker helper or the <WsrRegister> component.
 //
 // `UpdatableRouteOptionsExtensions` is TanStack's sanctioned empty-interface
 // hook for adding top-level route options (the same pattern `StaticDataRouteOption`
 // uses for `staticData`). So `createFileRoute('/x')({ wsr: true })` type-checks,
 // and the value is kept on `route.options.wsr` at runtime.
 import type {} from "@tanstack/router-core";
+
+/** HTTP methods a worker route can handle. */
+export type WorkerRouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+/**
+ * A worker route handler — the service-worker mirror of a server-route handler.
+ * Runs in the service worker (where a single stateful client can live) and
+ * returns a `Response`, just like `server.handlers`.
+ */
+export type WorkerRouteHandler = (ctx: {
+	request: Request;
+}) => Response | Promise<Response>;
 
 declare module "@tanstack/router-core" {
 	interface UpdatableRouteOptionsExtensions {
@@ -28,6 +40,20 @@ declare module "@tanstack/router-core" {
 		 * the lazy chunk loads, so it would be invisible.
 		 */
 		wsr?: boolean;
+
+		/**
+		 * Request handlers that run in the SERVICE WORKER — the mirror of `server`
+		 * route handlers, addressed by the route's own path. Reach them with
+		 * `workerFetch(path, init)`: it runs the handler directly when already in
+		 * the worker (e.g. a wsr loader on a hard load) and `fetch`es the path from
+		 * the main thread (the worker intercepts it). Lets a single stateful client
+		 * (a local-first / sync-engine client) live in the worker so reads and
+		 * writes share one store. Pair with `server.handlers` for the same method to
+		 * get an origin fallback when no worker is in control yet.
+		 */
+		worker?: {
+			handlers?: Partial<Record<WorkerRouteMethod, WorkerRouteHandler>>;
+		};
 	}
 }
 

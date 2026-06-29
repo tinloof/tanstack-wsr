@@ -38,13 +38,17 @@
     "./worker": {
       "types": "./dist/worker.d.mts",
       "default": "./dist/worker.mjs"
+    },
+    "./worker-fetch": {
+      "types": "./dist/worker-fetch.d.mts",
+      "default": "./dist/worker-fetch.mjs"
     }
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "tsdown src/vite.ts src/react.tsx src/worker.tsx src/devtools-stub.ts --format esm --dts --clean --no-config",
+    "build": "tsdown src/vite.ts src/react.tsx src/worker.tsx src/worker-fetch.ts src/devtools-stub.ts --format esm --dts --clean --no-config",
     "prepare": "pnpm run build && (git config core.hooksPath .githooks || true)",
     "dev": "pnpm -C examples/recipes dev",
     "build-install": "pnpm install --frozen-lockfile",
