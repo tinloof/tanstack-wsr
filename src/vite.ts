@@ -100,6 +100,38 @@ export const DEVTOOLS_ALIAS = {
 // to a caller-provided URL. `enforce: 'pre'` so it intercepts before Vite's core
 // asset handling — which, in this separate build, would otherwise emit a DUPLICATE
 // stylesheet instead of pointing at the app's already-hashed one.
+// Force a SINGLE copy of React and the TanStack router framework in the worker
+// bundle. The router is created by the app (with the app's @tanstack/react-router
+// + React) but rendered here; if the worker resolves its OWN copy — which happens
+// when this package is pnpm-linked for local dev, since the linked package has its
+// own node_modules tree — then RouterProvider/HeadContent and React's hook
+// dispatcher come from a different instance than the router/components, and SSR
+// hooks read null ("Cannot read properties of null (reading 'useRef' / 'options')").
+// dedupe + path aliases don't cut it (path aliases bypass exports maps for
+// exports-only packages like @tanstack/router-core), so re-resolve these shared
+// specifiers from the APP root using the bundler's own (exports-aware) resolution.
+function singleCopyPlugin(): Plugin {
+	const root = process.cwd();
+	const SHARED =
+		/^(react|react-dom|@tanstack\/react-router|@tanstack\/router-core)(\/.*)?$/;
+	return {
+		name: "tanstack-wsr:single-copy",
+		enforce: "pre",
+		async resolveId(source, _importer, options) {
+			if (!SHARED.test(source)) return null;
+			const resolved = await this.resolve(
+				source,
+				path.join(root, "index.html"),
+				{
+					...options,
+					skipSelf: true,
+				},
+			);
+			return resolved;
+		},
+	};
+}
+
 function urlAssetPlugin(resolveUrl: (absPath: string) => string): Plugin {
 	// Opaque ids (no real extension) so Vite's core CSS/asset pipeline doesn't
 	// claim them and turn our JS shim into a stylesheet.
@@ -418,6 +450,7 @@ export async function bundleWorker(
 			// createClientRpc, giving browser parity), OR — if Start couldn't be
 			// loaded — the fallback guard that fails the build rather than letting
 			// raw server code leak into /sw.js.
+			singleCopyPlugin(),
 			...(hasStart
 				? plugins
 				: [serverCodeGuard(path.resolve(process.cwd(), "src") + path.sep)]),
@@ -429,7 +462,13 @@ export async function bundleWorker(
 			write: false,
 			minify: !dev,
 			target: "esnext",
-			sourcemap: dev ? "inline" : false,
+			// Never inline a sourcemap into the worker. The base64 map roughly
+			// DOUBLES the served script size, and browsers cap the service-worker
+			// script size (~6MB in Chromium) — an app graph that pulls in a sync
+			// engine plus an inline map blows past it, and registration fails with
+			// "Failed to access storage". (Can't emit a sibling .map from this
+			// in-memory build, so dev loses worker sourcemaps; the app stays mapped.)
+			sourcemap: false,
 			rollupOptions: {
 				input,
 				// One self-contained file (no code-splitting / vendor chunks).
